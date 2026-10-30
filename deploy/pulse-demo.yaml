@@ -1,0 +1,34 @@
+name: pulse-demo
+
+services:
+  monitored-container:
+    image: alpine:3.20.3@sha256:1e42bbe2508154c9126d48c2b8a75420c3544343bf86fd041fb7527e017a4b4a
+    pull_policy: missing
+    user: "65534:65534"
+    command:
+      - /bin/sh
+      - -c
+      - trap 'exit 0' TERM INT; while true; do sleep 3600 & wait $$!; done
+    init: true
+    restart: "no"
+    cpus: 0.25
+    mem_limit: 64m
+    pids_limit: 32
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      pulse.monitor: "true"
+      com.pulse.owner: demo
+      com.pulse.disposable: "true"
+    healthcheck:
+      test: ["CMD", "/bin/sh", "-c", "test -r /etc/alpine-release"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 2s
+
