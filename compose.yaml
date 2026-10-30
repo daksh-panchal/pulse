@@ -1,0 +1,31 @@
+name: pulse
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb
+    restart: "no"
+    cpus: 0.50
+    mem_limit: 256m
+    pids_limit: 128
+    environment:
+      POSTGRES_DB: pulse
+      POSTGRES_USER: pulse
+      POSTGRES_PASSWORD: pulse_dev
+    ports:
+      - "127.0.0.1:${PULSE_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pulse-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse -d pulse"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    labels:
+      com.pulse.owner: application
+
+volumes:
+  pulse-postgres-data:
+    labels:
+      com.pulse.owner: application
+
