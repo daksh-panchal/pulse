@@ -107,6 +107,8 @@ The spike has not yet tested:
 - Windows containers; or
 - monitoring-path interruption, batching, retry, and stale-data behavior.
 
-Those belong in later focused tests. The read-only spike remains unable to
-create or mutate Docker resources; Compose exclusively owns fixture lifecycle.
+Those belong in later focused tests. The experiment could not create or mutate
+Docker resources; Compose exclusively owned fixture lifecycle. The standalone
+experiment was retired after Milestone 1 promoted its validated metric logic
+into the production agent.
 
