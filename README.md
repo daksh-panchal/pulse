@@ -5,9 +5,9 @@ It uses a Go agent to collect real CPU, memory, network, state, and health data
 from Docker Desktop, sends that telemetry to a Go backend, and stores current
 and historical measurements in PostgreSQL.
 
-The monitoring backend and agent are functional. Alerting and the web dashboard
-are still under development. Pulse never generates fake measurements for its
-APIs or future dashboard.
+The monitoring backend, agent, retry handling, and incident detection are
+functional. The web dashboard is still under development. Pulse never generates
+fake measurements for its APIs or future dashboard.
 
 ## Architecture
 
@@ -17,16 +17,20 @@ Docker Desktop
       | Docker Engine API
       v
 Pulse agent ---- telemetry batches ----> Pulse server ----> PostgreSQL
-                                               |
-                                               v
-                                      current and history APIs
+     |                                    |       |
+     | bounded retry spool                |       v
+     +------------------------------------+  alert evaluation
+                                                  |
+                                                  v
+                                      telemetry and incident APIs
 ```
 
 - The **agent** discovers only containers labelled `pulse.monitor=true`, reads
   Docker statistics, calculates resource utilization, and sends versioned
   batches at a configurable interval.
 - The **server** validates batches, prevents duplicate ingestion, stores them in
-  one transaction, and exposes current and historical telemetry.
+  one transaction, evaluates alert conditions, and exposes telemetry and
+  incident history.
 - **PostgreSQL** stores agents, batch identities, container instances, and
   time-series samples. Docker IDs keep recreated containers separate.
 
@@ -55,6 +59,18 @@ that are useful for monitoring:
 Unavailable metrics are stored as `null`, not zero. Current-container responses
 also classify telemetry as `current`, `delayed`, or `stale`, preventing old data
 from being presented as live data.
+
+## Reliability and incidents
+
+Failed deliveries are written atomically to a bounded local spool and retried
+oldest-first, including after an agent restart. By default, up to 256 batches are
+retained so a prolonged outage cannot consume unbounded disk space.
+
+Pulse detects sustained high CPU or memory, unavailable containers, and agents
+that stop reporting. Each condition has one active incident that progresses
+through `pending`, `firing`, `recovering`, and `resolved`; repeated bad samples
+update that incident instead of creating duplicates. Unknown or stale telemetry
+never resolves an incident because missing data is not proof of recovery.
 
 ## Key design decisions
 
@@ -112,6 +128,7 @@ GET  /healthz
 POST /api/v1/telemetry/batches
 GET  /api/v1/containers
 GET  /api/v1/containers/{full-docker-id}/metrics?from=&to=&limit=
+GET  /api/v1/incidents?view=active|history|all&limit=
 ```
 
 Query the latest observations and then one container's recent history:
@@ -125,7 +142,9 @@ Invoke-RestMethod "http://127.0.0.1:8080/api/v1/containers/$containerId/metrics"
 Configuration can be overridden with `PULSE_DATABASE_URL`,
 `PULSE_SERVER_ADDRESS`, `PULSE_SERVER_URL`, `PULSE_AGENT_ID`,
 `PULSE_AGENT_INTERVAL`, `PULSE_AGENT_REQUEST_TIMEOUT`, `PULSE_DOCKER_LABEL`, and
-`PULSE_POSTGRES_PORT`.
+`PULSE_POSTGRES_PORT`. Retry storage uses `PULSE_AGENT_SPOOL_DIR` and
+`PULSE_AGENT_SPOOL_MAX_BATCHES`. Alert thresholds and timing use the
+`PULSE_ALERT_*` variables defined in `cmd/pulse-server/pulse_server.go`.
 
 ## Testing
 
@@ -140,7 +159,7 @@ Run the opt-in PostgreSQL integration test against the Pulse database:
 
 ```powershell
 $env:PULSE_TEST_DATABASE_URL = "postgres://pulse:pulse_dev@127.0.0.1:5433/pulse?sslmode=disable"
-go test ./internal/storage/postgres -run TestStoreIngestAndQuery -v
+go test ./internal/storage/postgres -run "TestStoreIngestAndQuery|TestAlertSignalsAndIncidentPersistence" -v
 Remove-Item Env:PULSE_TEST_DATABASE_URL
 ```
 
@@ -150,8 +169,10 @@ Run the real Docker-to-agent-to-server-to-PostgreSQL verification:
 .\scripts\verify_end_to_end.ps1
 ```
 
-The integration and end-to-end tests use uniquely identified data and target
-only Pulse-owned resources during cleanup.
+The end-to-end test uses real, resource-limited CPU pressure and verifies
+container recovery, stale-agent detection, communication interruption, and
+queued telemetry replay. Tests use unique data and clean up only Pulse-owned
+resources.
 
 ## Safety and cleanup
 

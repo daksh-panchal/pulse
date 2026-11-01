@@ -19,7 +19,7 @@ function Invoke-Docker {
 
     & $dockerPath @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "Docker command failed with exit code $LASTEXITCODE."
+        throw "Docker command '$($Arguments -join ' ')' failed with exit code $LASTEXITCODE."
     }
 }
 
@@ -37,13 +37,70 @@ function Test-PortInUse {
     }
 }
 
+function Start-PulseServer {
+    param(
+        [string]$Executable,
+        [string]$WorkingDirectory
+    )
+
+    $process = Start-Process -FilePath $Executable -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        Start-Sleep -Milliseconds 500
+        try {
+            $health = Invoke-RestMethod http://127.0.0.1:8080/healthz -TimeoutSec 1
+            if ($health.status -eq 'ok') {
+                return $process
+            }
+        } catch {
+            # The server may still be starting.
+        }
+    }
+    if (-not $process.HasExited) {
+        Stop-Process -Id $process.Id -ErrorAction SilentlyContinue
+    }
+    throw 'Pulse server did not become healthy within 15 seconds.'
+}
+
+function Wait-PulseIncident {
+    param(
+        [string]$Kind,
+        [string]$State,
+        [string]$AgentId,
+        [string]$View = 'all',
+        [int]$TimeoutSeconds = 20
+    )
+
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $response = Invoke-RestMethod "http://127.0.0.1:8080/api/v1/incidents?view=$View&limit=1000"
+        $incident = $response.incidents |
+            Where-Object { $_.kind -eq $Kind -and $_.state -eq $State -and $_.agent_id -eq $AgentId } |
+            Select-Object -First 1
+        if ($null -ne $incident) {
+            return $incident
+        }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    throw "Incident $Kind did not reach $State within $TimeoutSeconds seconds."
+}
+
 Push-Location $repositoryRoot
 $applicationStarted = $false
 $demoStarted = $false
 $serverProcess = $null
-$testAgentId = "milestone-one-e2e-$PID"
+$agentProcess = $null
+$testAgentId = "milestone-two-e2e-$PID"
 $serverExecutable = Join-Path $env:TEMP "pulse-e2e-server-$PID.exe"
 $agentExecutable = Join-Path $env:TEMP "pulse-e2e-agent-$PID.exe"
+$spoolDirectory = Join-Path $env:TEMP "pulse-e2e-spool-$PID"
+$environmentNames = @(
+    'PULSE_AGENT_ID', 'PULSE_AGENT_INTERVAL', 'PULSE_AGENT_SPOOL_DIR',
+    'PULSE_ALERT_RESOURCE_SUSTAIN', 'PULSE_ALERT_AVAILABILITY_SUSTAIN',
+    'PULSE_ALERT_RECOVERY', 'PULSE_ALERT_AGENT_STALE_AFTER',
+    'PULSE_ALERT_CONTAINER_STALE_AFTER', 'PULSE_ALERT_EVALUATION_INTERVAL'
+)
+$previousEnvironment = @{}
+$environmentNames | ForEach-Object { $previousEnvironment[$_] = [Environment]::GetEnvironmentVariable($_) }
 
 try {
     $applicationContainers = & $dockerPath compose -f compose.yaml ps --all --quiet
@@ -65,44 +122,30 @@ try {
     & go build -o $agentExecutable ./cmd/pulse-agent
     if ($LASTEXITCODE -ne 0) { throw 'Could not build the Pulse agent.' }
 
-    $serverProcess = Start-Process -FilePath $serverExecutable -WorkingDirectory $repositoryRoot -WindowStyle Hidden -PassThru
-    $healthy = $false
-    for ($attempt = 0; $attempt -lt 30; $attempt++) {
-        Start-Sleep -Milliseconds 500
-        try {
-            $health = Invoke-RestMethod http://127.0.0.1:8080/healthz -TimeoutSec 1
-            if ($health.status -eq 'ok') {
-                $healthy = $true
-                break
-            }
-        } catch {
-            # The server may still be starting.
-        }
-    }
-    if (-not $healthy) {
-        throw 'Pulse server did not become healthy within 15 seconds.'
-    }
+    $env:PULSE_ALERT_RESOURCE_SUSTAIN = '3s'
+    $env:PULSE_ALERT_AVAILABILITY_SUSTAIN = '2s'
+    $env:PULSE_ALERT_RECOVERY = '2s'
+    $env:PULSE_ALERT_AGENT_STALE_AFTER = '8s'
+    $env:PULSE_ALERT_CONTAINER_STALE_AFTER = '4s'
+    $env:PULSE_ALERT_EVALUATION_INTERVAL = '500ms'
+    $serverProcess = Start-PulseServer -Executable $serverExecutable -WorkingDirectory $repositoryRoot
 
     Invoke-Docker compose -f deploy/pulse-demo.yaml up -d --wait
     $demoStarted = $true
 
-    $previousAgentId = $env:PULSE_AGENT_ID
-    try {
-        $env:PULSE_AGENT_ID = $testAgentId
-        & $agentExecutable -once
-        if ($LASTEXITCODE -ne 0) { throw 'Pulse agent failed.' }
-    } finally {
-        if ($null -eq $previousAgentId) {
-            Remove-Item Env:PULSE_AGENT_ID -ErrorAction SilentlyContinue
-        } else {
-            $env:PULSE_AGENT_ID = $previousAgentId
-        }
-    }
+    $env:PULSE_AGENT_ID = $testAgentId
+    $env:PULSE_AGENT_INTERVAL = '1s'
+    $env:PULSE_AGENT_SPOOL_DIR = $spoolDirectory
+    $agentProcess = Start-Process -FilePath $agentExecutable -WorkingDirectory $repositoryRoot -WindowStyle Hidden -PassThru
 
-    $overview = Invoke-RestMethod http://127.0.0.1:8080/api/v1/containers
-    $container = $overview.containers |
-        Where-Object { $_.agent_id -eq $testAgentId -and $_.container_name -eq 'pulse-demo-monitored-container-1' } |
-        Select-Object -First 1
+    $container = $null
+    for ($attempt = 0; $attempt -lt 20 -and $null -eq $container; $attempt++) {
+        Start-Sleep -Milliseconds 500
+        $overview = Invoke-RestMethod http://127.0.0.1:8080/api/v1/containers
+        $container = $overview.containers |
+            Where-Object { $_.agent_id -eq $testAgentId -and $_.container_name -eq 'pulse-demo-monitored-container-1' } |
+            Select-Object -First 1
+    }
     if ($null -eq $container) { throw 'Overview API did not return the test container.' }
     if ($container.state -ne 'running' -or $container.health -ne 'healthy') {
         throw "Unexpected container state: $($container.state)/$($container.health)."
@@ -122,10 +165,51 @@ try {
         throw 'Historical API returned no telemetry samples.'
     }
 
-    Write-Host 'Pulse end-to-end verification passed.'
+    Invoke-Docker -Arguments @('exec', '-d', 'pulse-demo-monitored-container-1', 'timeout', '10', 'sh', '-c', 'while :; do :; done')
+    $highCpuIncident = Wait-PulseIncident -Kind 'high_cpu' -State 'firing' -AgentId $testAgentId -View 'active' -TimeoutSeconds 15
+    $null = Wait-PulseIncident -Kind 'high_cpu' -State 'resolved' -AgentId $testAgentId -View 'history' -TimeoutSeconds 20
+
+    Invoke-Docker compose -f deploy/pulse-demo.yaml stop monitored-container
+    $unavailableIncident = Wait-PulseIncident -Kind 'container_unavailable' -State 'firing' -AgentId $testAgentId -View 'active' -TimeoutSeconds 10
+    Invoke-Docker compose -f deploy/pulse-demo.yaml start monitored-container
+    $null = Wait-PulseIncident -Kind 'container_unavailable' -State 'resolved' -AgentId $testAgentId -View 'history' -TimeoutSeconds 15
+
+    Stop-Process -Id $agentProcess.Id
+    $agentProcess.WaitForExit(5000) | Out-Null
+    $agentProcess = $null
+    $null = Wait-PulseIncident -Kind 'agent_stale' -State 'firing' -AgentId $testAgentId -View 'active' -TimeoutSeconds 15
+    $agentProcess = Start-Process -FilePath $agentExecutable -WorkingDirectory $repositoryRoot -WindowStyle Hidden -PassThru
+    $null = Wait-PulseIncident -Kind 'agent_stale' -State 'resolved' -AgentId $testAgentId -View 'history' -TimeoutSeconds 15
+
+    Stop-Process -Id $serverProcess.Id
+    $serverProcess.WaitForExit(5000) | Out-Null
+    $serverProcess = $null
+    Start-Sleep -Seconds 3
+    $queuedBeforeRecovery = @(Get-ChildItem -LiteralPath $spoolDirectory -Filter '*.json' -File).Count
+    if ($queuedBeforeRecovery -lt 1) {
+        throw 'The agent did not spool telemetry while the server was unavailable.'
+    }
+    $serverProcess = Start-PulseServer -Executable $serverExecutable -WorkingDirectory $repositoryRoot
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
+    do {
+        $queuedAfterRecovery = @(Get-ChildItem -LiteralPath $spoolDirectory -Filter '*.json' -File).Count
+        if ($queuedAfterRecovery -eq 0) { break }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    if ($queuedAfterRecovery -ne 0) {
+        throw 'The agent did not replay queued telemetry after the server recovered.'
+    }
+
+    Write-Host 'Pulse Milestone 2 end-to-end verification passed.'
     Write-Host "Container: $($container.container_id)"
     Write-Host "State: $($container.state)/$($container.health), freshness: $($container.freshness)"
+    Write-Host "High CPU incident: $($highCpuIncident.id), unavailable incident: $($unavailableIncident.id)"
+    Write-Host "Replayed queued batches after interruption: $queuedBeforeRecovery"
 } finally {
+    if ($agentProcess -and -not $agentProcess.HasExited) {
+        Stop-Process -Id $agentProcess.Id -ErrorAction SilentlyContinue
+        $agentProcess.WaitForExit(5000) | Out-Null
+    }
     if ($serverProcess -and -not $serverProcess.HasExited) {
         Stop-Process -Id $serverProcess.Id -ErrorAction SilentlyContinue
         $serverProcess.WaitForExit(5000) | Out-Null
@@ -147,6 +231,10 @@ try {
 
     Remove-Item -LiteralPath $serverExecutable -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $agentExecutable -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $spoolDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    foreach ($name in $environmentNames) {
+        [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name])
+    }
     Pop-Location
 }
 
