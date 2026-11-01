@@ -2,17 +2,21 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/daksh-panchal/pulse/internal/agentclient"
+	"github.com/daksh-panchal/pulse/internal/agentspool"
 	"github.com/daksh-panchal/pulse/internal/dockercollector"
 	"github.com/daksh-panchal/pulse/internal/telemetry"
 )
@@ -38,7 +42,7 @@ func main() {
 	if err != nil {
 		fatal(logger, "read hostname", err)
 	}
-	agentID := environment("PULSE_AGENT_ID", sanitizeAgentID(hostname))
+	agentID := sanitizeAgentID(environment("PULSE_AGENT_ID", hostname))
 	labelFilter := environment("PULSE_DOCKER_LABEL", defaultLabelFilter)
 	serverURL := environment("PULSE_SERVER_URL", "http://127.0.0.1:8080")
 
@@ -51,12 +55,28 @@ func main() {
 	if err != nil {
 		fatal(logger, "create telemetry sender", err)
 	}
+	cacheDirectory, err := os.UserCacheDir()
+	if err != nil {
+		fatal(logger, "locate user cache", err)
+	}
+	spoolDirectory := environment("PULSE_AGENT_SPOOL_DIR", filepath.Join(cacheDirectory, "Pulse", "agent-spool", agentID))
+	spoolMaximum, err := positiveIntEnvironment("PULSE_AGENT_SPOOL_MAX_BATCHES", 256, 1, 10_000)
+	if err != nil {
+		fatal(logger, "invalid spool maximum", err)
+	}
+	spool, err := agentspool.Open(spoolDirectory, spoolMaximum)
+	if err != nil {
+		fatal(logger, "open telemetry spool", err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	sequence := time.Now().UTC().UnixNano()
+	sequence, err := spool.NextSequence(time.Now().UTC().UnixNano())
+	if err != nil {
+		fatal(logger, "read telemetry spool", err)
+	}
 
-	collectAndSend := func() error {
+	collectAndQueue := func() error {
 		cycleContext, cancel := context.WithTimeout(ctx, requestTimeout)
 		defer cancel()
 		samples, err := collector.Collect(cycleContext)
@@ -70,16 +90,39 @@ func main() {
 			SentAt:   time.Now().UTC(),
 			Samples:  samples,
 		}
-		sequence++
-		accepted, err := sender.Send(cycleContext, batch)
-		if err != nil {
-			return fmt.Errorf("send telemetry sequence %d: %w", batch.Sequence, err)
+		if err := spool.Enqueue(batch); err != nil {
+			return fmt.Errorf("queue telemetry sequence %d: %w", batch.Sequence, err)
 		}
-		logger.Info("telemetry delivered", "sequence", batch.Sequence, "samples", len(samples), "accepted", accepted)
+		sequence++
 		return nil
 	}
+	flushQueue := func() error {
+		items, err := spool.Pending()
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			requestContext, cancel := context.WithTimeout(ctx, requestTimeout)
+			accepted, sendErr := sender.Send(requestContext, item.Batch)
+			cancel()
+			if sendErr != nil {
+				return fmt.Errorf("send queued telemetry sequence %d: %w", item.Batch.Sequence, sendErr)
+			}
+			if err := spool.Remove(item); err != nil {
+				return err
+			}
+			logger.Info("telemetry delivered", "sequence", item.Batch.Sequence,
+				"samples", len(item.Batch.Samples), "accepted", accepted)
+		}
+		return nil
+	}
+	runCycle := func() error {
+		collectionErr := collectAndQueue()
+		deliveryErr := flushQueue()
+		return errors.Join(collectionErr, deliveryErr)
+	}
 
-	if err := collectAndSend(); err != nil {
+	if err := runCycle(); err != nil {
 		if *runOnce {
 			fatal(logger, "one-shot collection failed", err)
 		}
@@ -95,11 +138,23 @@ func main() {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := collectAndSend(); err != nil {
+			if err := runCycle(); err != nil {
 				logger.Error("telemetry cycle failed", "error", err)
 			}
 		}
 	}
+}
+
+func positiveIntEnvironment(name string, fallback, minimum, maximum int) (int, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return 0, fmt.Errorf("%s must be between %d and %d", name, minimum, maximum)
+	}
+	return parsed, nil
 }
 
 func durationEnvironment(name string, fallback, minimum, maximum time.Duration) (time.Duration, error) {
