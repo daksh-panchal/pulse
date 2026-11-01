@@ -12,14 +12,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daksh-panchal/pulse/internal/alerting"
 	"github.com/daksh-panchal/pulse/internal/telemetry"
 )
 
 type fakeStore struct {
-	accepted bool
-	batch    telemetry.Batch
-	current  []telemetry.StoredSample
-	metrics  []telemetry.StoredSample
+	accepted  bool
+	batch     telemetry.Batch
+	current   []telemetry.StoredSample
+	metrics   []telemetry.StoredSample
+	incidents []alerting.Incident
 }
 
 func (store *fakeStore) Ping(context.Context) error { return nil }
@@ -34,6 +36,9 @@ func (store *fakeStore) ListCurrentContainers(context.Context) ([]telemetry.Stor
 func (store *fakeStore) ListMetrics(context.Context, string, time.Time, time.Time, int) ([]telemetry.StoredSample, error) {
 	return store.metrics, nil
 }
+func (store *fakeStore) ListIncidents(context.Context, alerting.View, int) ([]alerting.Incident, error) {
+	return store.incidents, nil
+}
 
 func testHandler(store *fakeStore, now time.Time) http.Handler {
 	handler := &Handler{store: store, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: func() time.Time { return now }}
@@ -42,6 +47,7 @@ func testHandler(store *fakeStore, now time.Time) http.Handler {
 	mux.HandleFunc("POST /api/v1/telemetry/batches", handler.ingest)
 	mux.HandleFunc("GET /api/v1/containers", handler.listContainers)
 	mux.HandleFunc("GET /api/v1/containers/{containerID}/metrics", handler.listMetrics)
+	mux.HandleFunc("GET /api/v1/incidents", handler.listIncidents)
 	return securityHeaders(mux)
 }
 
@@ -126,5 +132,24 @@ func TestListMetricsRejectsAbbreviatedContainerID(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/containers/abc123def456/metrics", nil))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+}
+
+func TestListIncidentsDefaultsToActiveView(t *testing.T) {
+	now := time.Now().UTC()
+	store := &fakeStore{incidents: []alerting.Incident{{
+		ID: 1, Fingerprint: "agent_stale:test", Kind: alerting.KindAgentStale,
+		AgentID: "test", State: alerting.StateFiring, Title: "Agent stale",
+		OpenedAt: now, LastEvaluatedAt: now, LastObservedAt: now,
+	}}}
+	handler := testHandler(store, now)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/incidents", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"view":"active"`) ||
+		!strings.Contains(response.Body.String(), `"kind":"agent_stale"`) {
+		t.Fatalf("unexpected response: %s", response.Body.String())
 	}
 }

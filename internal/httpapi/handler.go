@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daksh-panchal/pulse/internal/alerting"
 	"github.com/daksh-panchal/pulse/internal/storage"
 	"github.com/daksh-panchal/pulse/internal/telemetry"
 )
@@ -39,6 +40,7 @@ func New(store storage.Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /api/v1/telemetry/batches", handler.ingest)
 	mux.HandleFunc("GET /api/v1/containers", handler.listContainers)
 	mux.HandleFunc("GET /api/v1/containers/{containerID}/metrics", handler.listMetrics)
+	mux.HandleFunc("GET /api/v1/incidents", handler.listIncidents)
 	return securityHeaders(mux)
 }
 
@@ -158,6 +160,33 @@ func (handler *Handler) listMetrics(response http.ResponseWriter, request *http.
 	})
 }
 
+func (handler *Handler) listIncidents(response http.ResponseWriter, request *http.Request) {
+	view := alerting.View(request.URL.Query().Get("view"))
+	if view == "" {
+		view = alerting.ViewActive
+	}
+	if view != alerting.ViewActive && view != alerting.ViewHistory && view != alerting.ViewAll {
+		writeError(response, http.StatusBadRequest, "view must be active, history, or all")
+		return
+	}
+	limit, err := parseIncidentLimit(request.URL.Query().Get("limit"))
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
+	incidents, err := handler.store.ListIncidents(request.Context(), view, limit)
+	if err != nil {
+		handler.logger.Error("list incidents failed", "view", view, "error", err)
+		writeError(response, http.StatusInternalServerError, "could not query incidents")
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"generated_at": handler.now(),
+		"view":         view,
+		"incidents":    incidents,
+	})
+}
+
 func freshness(age time.Duration) string {
 	if age < 0 {
 		age = 0
@@ -190,6 +219,17 @@ func parseLimit(value string) (int, error) {
 	limit, err := strconv.Atoi(value)
 	if err != nil || limit < 1 || limit > maxQueryLimit {
 		return 0, fmt.Errorf("limit must be between 1 and %d", maxQueryLimit)
+	}
+	return limit, nil
+}
+
+func parseIncidentLimit(value string) (int, error) {
+	if value == "" {
+		return 100, nil
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit < 1 || limit > 1000 {
+		return 0, errors.New("limit must be between 1 and 1000")
 	}
 	return limit, nil
 }
