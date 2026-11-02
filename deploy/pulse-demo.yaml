@@ -16,7 +16,7 @@ services:
     pids_limit: 32
     read_only: true
     tmpfs:
-      - /tmp:size=8m,mode=1777
+      - /tmp:size=40m,mode=1777
     cap_drop:
       - ALL
     security_opt:
@@ -27,6 +27,37 @@ services:
       com.pulse.disposable: "true"
     healthcheck:
       test: ["CMD", "/bin/sh", "-c", "test -r /etc/alpine-release"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 2s
+
+  traffic-target:
+    image: alpine:3.20.3@sha256:1e42bbe2508154c9126d48c2b8a75420c3544343bf86fd041fb7527e017a4b4a
+    pull_policy: missing
+    user: "65534:65534"
+    command:
+      - nc
+      - -lk
+      - -p
+      - "8080"
+      - -e
+      - /bin/cat
+    init: true
+    restart: "no"
+    cpus: 0.10
+    mem_limit: 16m
+    pids_limit: 16
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      com.pulse.owner: demo
+      com.pulse.disposable: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "printf health | nc -w 2 127.0.0.1 8080 | grep -q health"]
       interval: 5s
       timeout: 2s
       retries: 3

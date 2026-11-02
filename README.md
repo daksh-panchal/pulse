@@ -5,9 +5,10 @@ It uses a Go agent to collect real CPU, memory, network, state, and health data
 from Docker Desktop, sends that telemetry to a Go backend, and stores current
 and historical measurements in PostgreSQL.
 
-The monitoring backend, agent, retry handling, and incident detection are
-functional. The web dashboard is still under development. Pulse never generates
-fake measurements for its APIs or future dashboard.
+The monitoring backend, reliable agent delivery, incident detection, and web
+dashboard are functional. Every dashboard value comes from telemetry collected
+from Docker and returned by the Pulse backend; Pulse does not generate fake
+measurements.
 
 ## Architecture
 
@@ -23,6 +24,9 @@ Pulse agent ---- telemetry batches ----> Pulse server ----> PostgreSQL
                                                   |
                                                   v
                                       telemetry and incident APIs
+                                                  |
+                                                  v
+                                      embedded web dashboard
 ```
 
 - The **agent** discovers only containers labelled `pulse.monitor=true`, reads
@@ -31,11 +35,13 @@ Pulse agent ---- telemetry batches ----> Pulse server ----> PostgreSQL
 - The **server** validates batches, prevents duplicate ingestion, stores them in
   one transaction, evaluates alert conditions, and exposes telemetry and
   incident history.
+- The **dashboard** is embedded in the server binary and polls the versioned
+  API for live inventory, historical charts, and incident timelines.
 - **PostgreSQL** stores agents, batch identities, container instances, and
   time-series samples. Docker IDs keep recreated containers separate.
 
 The server is a modular monolith rather than a collection of microservices.
-Only the agent can access Docker; the backend and future browser dashboard
+Only the agent can access Docker; the backend and browser dashboard
 cannot control containers.
 
 ## Telemetry semantics
@@ -82,6 +88,8 @@ never resolves an incident because missing data is not proof of recovery.
 - Batch storage is transactional, so partial batches are not committed.
 - Query ranges, request sizes, sample counts, and container resources are
   bounded.
+- Historical chart queries use bounded time buckets and always retain the
+  newest sample in each bucket.
 - Images used by the local environment are pinned to verified digests.
 
 ## Technology stack
@@ -90,6 +98,7 @@ never resolves an incident because missing data is not proof of recovery.
 - Docker Engine API through the Moby client
 - PostgreSQL 17 through `pgx`
 - Versioned JSON REST APIs
+- Embedded Angular, TypeScript, Tailwind CSS, and SVG charts
 - Docker Desktop and Docker Compose
 - Go unit, HTTP contract, PostgreSQL integration, and end-to-end tests
 
@@ -97,16 +106,41 @@ never resolves an incident because missing data is not proof of recovery.
 
 Development currently targets Windows with Docker Desktop running Linux
 containers. Go 1.27, Docker Compose, Git, and PowerShell are required.
+Node.js is needed only when changing and rebuilding the dashboard source.
 
-Start PostgreSQL:
+Start the complete demonstration with one command:
+
+```powershell
+.\scripts\run_demo.ps1
+```
+
+The launcher validates the Compose files, builds the Go programs, starts
+PostgreSQL, the resource-limited monitored container, server, and agent, waits
+for real telemetry, and opens `http://127.0.0.1:8080`. Its terminal menu provides
+these controls:
+
+```text
+[1] CPU pressure
+[2] Memory pressure
+[3] Local network traffic
+[4] Stop the monitored container
+[5] Restart the monitored container
+[6] Interrupt and reconnect the agent
+[Q] Stop and clean up
+```
+
+Choose `Q` when finished. This stops the agent, server, PostgreSQL, and demo
+containers, so telemetry ingestion also stops. Stored PostgreSQL data is
+preserved. Use `-NoBrowser` to skip opening a browser.
+
+The menu changes real behavior only inside the disposable demo environment.
+It never sends measurements or incidents to Pulse: the agent reads the resulting
+Docker telemetry and the backend independently detects incident transitions.
+
+For manual development, start PostgreSQL and then the server:
 
 ```powershell
 docker compose up -d --wait postgres
-```
-
-Start the server:
-
-```powershell
 go run ./cmd/pulse-server
 ```
 
@@ -117,9 +151,10 @@ docker compose -f deploy/pulse-demo.yaml up -d --wait
 go run ./cmd/pulse-agent
 ```
 
-The demo container is limited to `0.25` CPU, `64 MiB` memory, and 32 processes.
-It runs as a non-root user with a read-only filesystem, no capabilities, no host
-mounts, and no published ports.
+The monitored container is limited to `0.25` CPU, `64 MiB` memory, and 32
+processes. Its local-only traffic target is limited to `0.10` CPU, `16 MiB`, and
+16 processes. Both run as non-root users with read-only filesystems, no
+capabilities, no host mounts, and no published ports.
 
 ### API
 
@@ -127,7 +162,7 @@ mounts, and no published ports.
 GET  /healthz
 POST /api/v1/telemetry/batches
 GET  /api/v1/containers
-GET  /api/v1/containers/{full-docker-id}/metrics?from=&to=&limit=
+GET  /api/v1/containers/{full-docker-id}/metrics?from=&to=&resolution=&limit=
 GET  /api/v1/incidents?view=active|history|all&limit=
 ```
 
@@ -155,6 +190,15 @@ go test ./...
 go vet ./...
 ```
 
+Type-check and rebuild the embedded dashboard after frontend changes:
+
+```powershell
+Set-Location web
+npm run typecheck
+npm run build
+Set-Location ..
+```
+
 Run the opt-in PostgreSQL integration test against the Pulse database:
 
 ```powershell
@@ -174,11 +218,26 @@ container recovery, stale-agent detection, communication interruption, and
 queued telemetry replay. Tests use unique data and clean up only Pulse-owned
 resources.
 
+Verify the complete one-command startup without opening a browser or waiting
+for input:
+
+```powershell
+.\scripts\run_demo.ps1 -VerifyOnly -NoBrowser
+```
+
 ## Safety and cleanup
 
 Pulse uses modest resource limits, local-only service ports, digest-pinned
 images, and explicitly labelled resources. Demo containers have no privileged
 access, Docker socket mount, personal-directory mount, or unbounded workload.
+The workloads triggered by the demo menu are time- and size-bounded.
+
+Docker Engine access is inherently powerful, although Pulse limits it to the
+agent and the agent performs only discovery, inspection, and statistics calls.
+The local development API and database do not provide production authentication
+or TLS. Telemetry storage also has no automatic retention cleanup yet, so Pulse
+should not be left ingesting indefinitely without periodically managing its
+development database volume.
 
 Stop the demo and database without deleting stored telemetry:
 
@@ -186,6 +245,10 @@ Stop the demo and database without deleting stored telemetry:
 docker compose -f deploy/pulse-demo.yaml down --remove-orphans
 docker compose down
 ```
+
+Normally, choosing `Q` performs this cleanup automatically. If PowerShell or
+Docker Desktop closes unexpectedly, run the two commands above after Docker is
+available again. They affect only the named Pulse Compose projects.
 
 The PostgreSQL volume is preserved. `docker compose down --volumes` should only
 be used when intentionally deleting all Pulse development data after confirming
