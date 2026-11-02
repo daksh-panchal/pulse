@@ -71,6 +71,24 @@ func TestAlertSignalsAndIncidentPersistence(t *testing.T) {
 	if memorySignal == nil || !memorySignal.Known || !memorySignal.Breached {
 		t.Fatalf("high memory signal = %#v", memorySignal)
 	}
+	emptyBatch := telemetry.Batch{
+		Version: telemetry.APIVersion, Agent: batch.Agent, Sequence: batch.Sequence + 1,
+		SentAt: now.Add(time.Second), Samples: []telemetry.Sample{},
+	}
+	if accepted, err := store.Ingest(ctx, emptyBatch); err != nil || !accepted {
+		t.Fatalf("empty Ingest() = (%t, %v), want (true, nil)", accepted, err)
+	}
+	removedSignals, err := store.ListAlertSignals(ctx, now.Add(time.Second), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, signal := range removedSignals {
+		if signal.ContainerID == containerID && (signal.Kind == alerting.KindHighCPU || signal.Kind == alerting.KindHighMemory || signal.Kind == alerting.KindContainerUnavailable) {
+			if !signal.Known || signal.Breached {
+				t.Fatalf("removed-container signal = %#v, want known recovery", signal)
+			}
+		}
+	}
 
 	incident, err := store.CreateIncident(ctx, alerting.Incident{
 		Fingerprint: cpuSignal.Fingerprint, Kind: cpuSignal.Kind, AgentID: agentID,

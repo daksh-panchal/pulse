@@ -179,6 +179,9 @@ func (store *Store) ListCurrentContainers(ctx context.Context) ([]telemetry.Stor
 			ORDER BY newest.sampled_at DESC, newest.id DESC
 			LIMIT 1
 		)
+		AND s.batch_sequence = (
+			SELECT last_sequence FROM agents WHERE id = s.agent_id
+		)
 		ORDER BY c.name, s.docker_id`)
 	if err != nil {
 		return nil, fmt.Errorf("query current containers: %w", err)
@@ -200,11 +203,30 @@ func (store *Store) ListCurrentContainers(ctx context.Context) ([]telemetry.Stor
 	return result, nil
 }
 
-func (store *Store) ListMetrics(ctx context.Context, containerID string, from, to time.Time, limit int) ([]telemetry.StoredSample, error) {
-	rows, err := store.pool.Query(ctx, sampleSelect+`
-		WHERE s.docker_id = $1 AND s.sampled_at >= $2 AND s.sampled_at <= $3
-		ORDER BY s.sampled_at ASC, s.id ASC
-		LIMIT $4`, containerID, from, to, limit)
+func (store *Store) ListMetrics(ctx context.Context, containerID string, from, to time.Time, resolution time.Duration, limit int) ([]telemetry.StoredSample, error) {
+	query := sampleSelect + `
+		WHERE s.id IN (
+			SELECT id FROM telemetry_samples
+			WHERE docker_id = $1 AND sampled_at >= $2 AND sampled_at <= $3
+			ORDER BY sampled_at DESC, id DESC
+			LIMIT $4
+		)
+		ORDER BY s.sampled_at ASC, s.id ASC`
+	arguments := []any{containerID, from, to, limit}
+	if resolution > 0 {
+		query = sampleSelect + `
+			WHERE s.id IN (
+				SELECT DISTINCT ON (floor(extract(epoch FROM sampled_at) / $5)) id
+				FROM telemetry_samples
+				WHERE docker_id = $1 AND sampled_at >= $2 AND sampled_at <= $3
+				ORDER BY floor(extract(epoch FROM sampled_at) / $5) DESC,
+					sampled_at DESC, id DESC
+				LIMIT $4
+			)
+			ORDER BY s.sampled_at ASC, s.id ASC`
+		arguments = append(arguments, resolution.Seconds())
+	}
+	rows, err := store.pool.Query(ctx, query, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("query metrics: %w", err)
 	}

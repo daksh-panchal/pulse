@@ -57,12 +57,19 @@ func TestStoreIngestAndQuery(t *testing.T) {
 		t.Fatalf("duplicate Ingest() = (%t, %v), want (false, nil)", accepted, err)
 	}
 
-	metrics, err := store.ListMetrics(ctx, containerID, now.Add(-time.Second), now.Add(time.Second), 10)
+	metrics, err := store.ListMetrics(ctx, containerID, now.Add(-time.Second), now.Add(time.Second), 0, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(metrics) != 1 || metrics[0].CPUUtilizationPercent == nil || *metrics[0].CPUUtilizationPercent != cpu {
 		t.Fatalf("unexpected metrics: %#v", metrics)
+	}
+	bucketedMetrics, err := store.ListMetrics(ctx, containerID, now.Add(-time.Second), now.Add(time.Second), time.Second, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bucketedMetrics) != 1 || bucketedMetrics[0].ContainerID != containerID {
+		t.Fatalf("unexpected bucketed metrics: %#v", bucketedMetrics)
 	}
 	current, err := store.ListCurrentContainers(ctx)
 	if err != nil {
@@ -77,5 +84,21 @@ func TestStoreIngestAndQuery(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("current containers did not include %s", containerID)
+	}
+	emptyBatch := telemetry.Batch{
+		Version: telemetry.APIVersion, Agent: batch.Agent, Sequence: batch.Sequence + 1,
+		SentAt: now.Add(time.Second), Samples: []telemetry.Sample{},
+	}
+	if accepted, err := store.Ingest(ctx, emptyBatch); err != nil || !accepted {
+		t.Fatalf("empty Ingest() = (%t, %v), want (true, nil)", accepted, err)
+	}
+	current, err = store.ListCurrentContainers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sample := range current {
+		if sample.ContainerID == containerID {
+			t.Fatalf("current containers retained %s after it disappeared from the latest batch", containerID)
+		}
 	}
 }

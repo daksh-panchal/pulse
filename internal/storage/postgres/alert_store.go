@@ -58,12 +58,12 @@ func (store *Store) listAgentSignals(ctx context.Context, now time.Time, policy 
 func (store *Store) listContainerSignals(ctx context.Context, now time.Time, policy alerting.Policy) ([]alerting.Signal, error) {
 	rows, err := store.pool.Query(ctx, `
 		SELECT c.docker_id, c.agent_id, c.name, a.last_seen_at,
-			s.sampled_at, s.state, s.health,
+			s.sampled_at, s.state, s.health, s.batch_sequence = a.last_sequence,
 			s.cpu_utilization_percent, s.memory_utilization_percent
 		FROM container_instances c
 		JOIN agents a ON a.id = c.agent_id
 		JOIN LATERAL (
-			SELECT sampled_at, state, health, cpu_utilization_percent,
+			SELECT sampled_at, state, health, batch_sequence, cpu_utilization_percent,
 				memory_utilization_percent
 			FROM telemetry_samples
 			WHERE docker_id = c.docker_id
@@ -80,20 +80,22 @@ func (store *Store) listContainerSignals(ctx context.Context, now time.Time, pol
 	for rows.Next() {
 		var containerID, agentID, name, state, health string
 		var agentLastSeenAt, sampledAt time.Time
+		var currentlyReported bool
 		var cpu, memory *float64
-		if err := rows.Scan(&containerID, &agentID, &name, &agentLastSeenAt, &sampledAt, &state, &health, &cpu, &memory); err != nil {
+		if err := rows.Scan(&containerID, &agentID, &name, &agentLastSeenAt, &sampledAt, &state, &health, &currentlyReported, &cpu, &memory); err != nil {
 			return nil, fmt.Errorf("scan container alert signal: %w", err)
 		}
 		agentFresh := now.Sub(agentLastSeenAt) <= policy.AgentStaleAfter
 		sampleFresh := now.Sub(sampledAt) <= policy.ContainerStaleAfter
 		details := map[string]any{
-			"container_name": name,
-			"state":          state,
-			"health":         health,
-			"sampled_at":     sampledAt,
+			"container_name":     name,
+			"state":              state,
+			"health":             health,
+			"sampled_at":         sampledAt,
+			"currently_reported": currentlyReported,
 		}
-		availabilityBreached := !strings.EqualFold(state, "running") ||
-			strings.EqualFold(health, "unhealthy") || !sampleFresh
+		availabilityBreached := currentlyReported && (!strings.EqualFold(state, "running") ||
+			strings.EqualFold(health, "unhealthy") || !sampleFresh)
 		signals = append(signals, alerting.Signal{
 			Fingerprint: "container_unavailable:" + containerID,
 			Kind:        alerting.KindContainerUnavailable,
@@ -113,8 +115,8 @@ func (store *Store) listContainerSignals(ctx context.Context, now time.Time, pol
 			AgentID:       agentID,
 			ContainerID:   containerID,
 			Title:         fmt.Sprintf("Container %s has high CPU utilization", name),
-			Known:         agentFresh && sampleFresh && strings.EqualFold(state, "running") && cpu != nil,
-			Breached:      cpu != nil && *cpu >= cpuThreshold,
+			Known:         agentFresh && (!currentlyReported || (sampleFresh && strings.EqualFold(state, "running") && cpu != nil)),
+			Breached:      currentlyReported && cpu != nil && *cpu >= cpuThreshold,
 			Threshold:     &cpuThreshold,
 			ObservedValue: cpu,
 			ObservedAt:    sampledAt,
@@ -128,8 +130,8 @@ func (store *Store) listContainerSignals(ctx context.Context, now time.Time, pol
 			AgentID:       agentID,
 			ContainerID:   containerID,
 			Title:         fmt.Sprintf("Container %s has high memory utilization", name),
-			Known:         agentFresh && sampleFresh && strings.EqualFold(state, "running") && memory != nil,
-			Breached:      memory != nil && *memory >= memoryThreshold,
+			Known:         agentFresh && (!currentlyReported || (sampleFresh && strings.EqualFold(state, "running") && memory != nil)),
+			Breached:      currentlyReported && memory != nil && *memory >= memoryThreshold,
 			Threshold:     &memoryThreshold,
 			ObservedValue: memory,
 			ObservedAt:    sampledAt,
