@@ -1,0 +1,51 @@
+<section class="panel p-4 sm:p-5">
+  <div class="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+    <div>
+      <p class="section-label">Reliability</p>
+      <h2 class="text-base font-medium">Incidents</h2>
+    </div>
+    <div class="segmented-control" aria-label="Incident view">
+      @for (option of viewOptions; track option) {
+        <button
+          type="button"
+          class="segmented-option capitalize"
+          [class.segmented-option-active]="view() === option"
+          [attr.aria-pressed]="view() === option"
+          (click)="viewChanged.emit(option)"
+        >{{ option }}</button>
+      }
+    </div>
+  </div>
+
+  @if (incidents().length === 0) {
+    <div class="empty-state">
+      <span class="mb-3 size-2 rounded-full bg-accent"></span>
+      <h3 class="text-sm font-medium">{{ view() === "active" ? "No active incidents" : "No incident history yet" }}</h3>
+      <p class="mt-1 text-xs text-muted">
+        {{ view() === "active" ? "All known conditions are currently within policy." : "Resolved incidents will appear here with their recovery duration." }}
+      </p>
+    </div>
+  } @else {
+    <div class="space-y-1.5">
+      @for (incident of incidents(); track incident.id) {
+        <article class="grid gap-3 rounded-md border border-line p-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center lg:grid-cols-[minmax(240px,1.5fr)_minmax(140px,.7fr)_auto_minmax(100px,.5fr)]">
+          <div class="min-w-0">
+            <h3 class="truncate text-sm font-medium">{{ incident.title }}</h3>
+            <p class="mt-1 text-[11px] text-faint">
+              {{ incident.threshold == null ? kindLabel(incident.kind) : "Threshold " + incident.threshold + "% · observed " + (incident.observed_value?.toFixed(1) ?? "—") + "%" }}
+            </p>
+          </div>
+          <div class="min-w-0 text-xs">
+            <p class="truncate text-muted">{{ incident.details?.container_name ?? incident.agent_id }}</p>
+            <p class="mt-1 text-[10px] text-faint">{{ kindLabel(incident.kind) }}</p>
+          </div>
+          <pulse-status-badge [level]="level(incident)" [label]="incident.state" />
+          <div class="text-xs text-muted">
+            <p>{{ relativeTime(incident.opened_at) }}</p>
+            <p class="mt-1 text-[10px] text-faint">{{ durationBetween(incident.opened_at, incident.resolved_at ?? incident.last_evaluated_at) }} duration</p>
+          </div>
+        </article>
+      }
+    </div>
+  }
+</section>

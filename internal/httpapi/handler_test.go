@@ -17,11 +17,12 @@ import (
 )
 
 type fakeStore struct {
-	accepted  bool
-	batch     telemetry.Batch
-	current   []telemetry.StoredSample
-	metrics   []telemetry.StoredSample
-	incidents []alerting.Incident
+	accepted   bool
+	batch      telemetry.Batch
+	current    []telemetry.StoredSample
+	metrics    []telemetry.StoredSample
+	incidents  []alerting.Incident
+	resolution time.Duration
 }
 
 func (store *fakeStore) Ping(context.Context) error { return nil }
@@ -33,7 +34,8 @@ func (store *fakeStore) Ingest(_ context.Context, batch telemetry.Batch) (bool, 
 func (store *fakeStore) ListCurrentContainers(context.Context) ([]telemetry.StoredSample, error) {
 	return store.current, nil
 }
-func (store *fakeStore) ListMetrics(context.Context, string, time.Time, time.Time, int) ([]telemetry.StoredSample, error) {
+func (store *fakeStore) ListMetrics(_ context.Context, _ string, _, _ time.Time, resolution time.Duration, _ int) ([]telemetry.StoredSample, error) {
+	store.resolution = resolution
 	return store.metrics, nil
 }
 func (store *fakeStore) ListIncidents(context.Context, alerting.View, int) ([]alerting.Incident, error) {
@@ -132,6 +134,22 @@ func TestListMetricsRejectsAbbreviatedContainerID(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/containers/abc123def456/metrics", nil))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+}
+
+func TestListMetricsAcceptsBoundedResolution(t *testing.T) {
+	now := time.Now().UTC()
+	store := &fakeStore{}
+	handler := testHandler(store, now)
+	containerID := strings.Repeat("a", 64)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/containers/"+containerID+"/metrics?resolution=30s", nil)
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if store.resolution != 30*time.Second {
+		t.Fatalf("resolution = %s, want 30s", store.resolution)
 	}
 }
 

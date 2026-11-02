@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist/out-tsc/application",
+    "types": []
+  },
+  "files": ["src/pulse-main.ts"],
+  "include": ["src/**/*.d.ts"]
+}

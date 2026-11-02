@@ -1,0 +1,59 @@
+<a href="#dashboard-content" class="fixed top-2 -left-40 z-50 rounded bg-accent px-3 py-2 text-xs font-medium text-canvas focus:left-2">
+  Skip to dashboard
+</a>
+
+<pulse-header [online]="dashboard.online()" [generatedAt]="dashboard.generatedAt()" />
+
+<main id="dashboard-content" class="mx-auto grid max-w-[1480px] gap-4 px-4 py-6 sm:px-6 sm:py-8">
+  <header class="flex items-end justify-between gap-4">
+    <div>
+      <p class="section-label">Infrastructure Overview</p>
+      <p class="mt-1 text-sm text-muted">Live telemetry, resource history, and incident state.</p>
+    </div>
+    <button
+      type="button"
+      aria-label="Refresh dashboard"
+      [disabled]="dashboard.loading()"
+      (click)="dashboard.refresh()"
+      class="inline-flex size-9 items-center justify-center rounded-md border border-line text-muted transition-colors hover:bg-surface-raised hover:text-ink disabled:opacity-50"
+    >↻</button>
+  </header>
+
+  @if (dashboard.error()) {
+    <div role="alert" class="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">
+      {{ dashboard.error() }}
+    </div>
+  }
+
+  <pulse-summary-cards
+    [containers]="dashboard.containers()"
+    [activeIncidents]="dashboard.activeIncidents()"
+  />
+
+  <section class="panel grid min-h-[680px] overflow-hidden lg:grid-cols-[290px_minmax(0,1fr)]">
+    <pulse-container-inventory
+      [containers]="dashboard.containers()"
+      [activeIncidents]="dashboard.activeIncidents()"
+      [selectedID]="dashboard.selectedID()"
+      (containerSelected)="dashboard.selectContainer($event)"
+    />
+    <pulse-container-detail
+      [container]="dashboard.selectedContainer()"
+      [activeIncidents]="dashboard.activeIncidents()"
+      [samples]="dashboard.samples()"
+      [range]="dashboard.range()"
+      (rangeChanged)="dashboard.selectRange($event)"
+    />
+  </section>
+
+  <pulse-incident-list
+    [incidents]="dashboard.incidents()"
+    [view]="dashboard.incidentView()"
+    (viewChanged)="dashboard.selectIncidentView($event)"
+  />
+</main>
+
+<footer class="mx-auto flex max-w-[1480px] justify-between px-4 pb-8 text-[11px] text-faint sm:px-6">
+  <span>Pulse</span>
+  <span>Real telemetry from Docker Desktop</span>
+</footer>

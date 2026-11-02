@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/daksh-panchal/pulse/internal/alerting"
+	"github.com/daksh-panchal/pulse/internal/dashboard"
 	"github.com/daksh-panchal/pulse/internal/storage"
 	"github.com/daksh-panchal/pulse/internal/telemetry"
 )
@@ -41,6 +42,7 @@ func New(store storage.Store, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /api/v1/containers", handler.listContainers)
 	mux.HandleFunc("GET /api/v1/containers/{containerID}/metrics", handler.listMetrics)
 	mux.HandleFunc("GET /api/v1/incidents", handler.listIncidents)
+	dashboard.Register(mux)
 	return securityHeaders(mux)
 }
 
@@ -145,19 +147,36 @@ func (handler *Handler) listMetrics(response http.ResponseWriter, request *http.
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
 	}
+	resolution, err := parseResolution(request.URL.Query().Get("resolution"))
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	samples, err := handler.store.ListMetrics(request.Context(), containerID, from, to, limit)
+	samples, err := handler.store.ListMetrics(request.Context(), containerID, from, to, resolution, limit)
 	if err != nil {
 		handler.logger.Error("list metrics failed", "container_id", containerID, "error", err)
 		writeError(response, http.StatusInternalServerError, "could not query metrics")
 		return
 	}
 	writeJSON(response, http.StatusOK, map[string]any{
-		"container_id": containerID,
-		"from":         from,
-		"to":           to,
-		"samples":      samples,
+		"container_id":       containerID,
+		"from":               from,
+		"to":                 to,
+		"resolution_seconds": resolution.Seconds(),
+		"samples":            samples,
 	})
+}
+
+func parseResolution(value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	resolution, err := time.ParseDuration(value)
+	if err != nil || resolution < time.Second || resolution > time.Hour {
+		return 0, errors.New("resolution must be a duration between 1s and 1h")
+	}
+	return resolution, nil
 }
 
 func (handler *Handler) listIncidents(response http.ResponseWriter, request *http.Request) {
@@ -263,6 +282,8 @@ func writeJSON(response http.ResponseWriter, status int, value any) {
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("X-Content-Type-Options", "nosniff")
+		response.Header().Set("Referrer-Policy", "no-referrer")
+		response.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
 		response.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(response, request)
 	})

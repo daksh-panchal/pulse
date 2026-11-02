@@ -1,0 +1,91 @@
+@if (container(); as item) {
+  <div class="min-w-0 p-4 sm:p-5">
+    <div class="mb-5 flex flex-col justify-between gap-4 xl:flex-row xl:items-center">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <h2 class="truncate text-lg font-medium">{{ item.container_name }}</h2>
+          @if (status(); as currentStatus) {
+            <pulse-status-badge [level]="currentStatus.level" [label]="currentStatus.label" />
+          }
+        </div>
+        <p class="mt-1 truncate text-xs text-faint">{{ item.image }}</p>
+      </div>
+      <div class="segmented-control" aria-label="Chart time range">
+        @for (option of rangeOptions; track option) {
+          <button
+            type="button"
+            class="segmented-option"
+            [class.segmented-option-active]="range() === option"
+            [attr.aria-pressed]="range() === option"
+            (click)="rangeChanged.emit(option)"
+          >{{ option }}</button>
+        }
+      </div>
+    </div>
+
+    <dl class="mb-3 grid overflow-hidden rounded-md border border-line sm:grid-cols-2 xl:grid-cols-4">
+      <div class="min-w-0 border-b border-line p-3 xl:border-r xl:border-b-0">
+        <dt class="text-[10px] tracking-wide text-faint uppercase">Container ID</dt>
+        <dd class="mt-1 truncate text-xs text-muted" [title]="item.container_id">{{ item.container_id.slice(0, 12) }}</dd>
+      </div>
+      <div class="min-w-0 border-b border-line p-3 sm:border-l xl:border-r xl:border-b-0">
+        <dt class="text-[10px] tracking-wide text-faint uppercase">Agent</dt>
+        <dd class="mt-1 truncate text-xs text-muted">{{ item.agent_id }}</dd>
+      </div>
+      <div class="min-w-0 border-b border-line p-3 sm:border-b-0 xl:border-r">
+        <dt class="text-[10px] tracking-wide text-faint uppercase">Last sample</dt>
+        <dd class="mt-1 truncate text-xs text-muted">{{ relativeTime(item.sampled_at) }}</dd>
+      </div>
+      <div class="min-w-0 p-3 sm:border-l xl:border-l-0">
+        <dt class="text-[10px] tracking-wide text-faint uppercase">Docker health</dt>
+        <dd class="mt-1 truncate text-xs text-muted">{{ titleCase(item.state) }} · {{ titleCase(item.health || "not configured") }}</dd>
+      </div>
+    </dl>
+
+    <div class="mb-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      <pulse-resource-metric
+        label="CPU utilization"
+        [value]="formatPercent(item.cpu_utilization_percent)"
+        [progress]="item.cpu_utilization_percent"
+        [note]="item.cpu_limit_cores == null ? 'CPU limit unavailable' : formatNumber(item.cpu_limit_cores, 2) + ' configured cores'"
+      />
+      <pulse-resource-metric
+        label="Memory utilization"
+        [value]="formatPercent(item.memory_utilization_percent)"
+        [progress]="item.memory_utilization_percent"
+        [note]="formatBytes(item.memory_working_set_bytes) + ' of ' + formatBytes(item.memory_limit_bytes)"
+      />
+      <pulse-resource-metric label="Network received" [value]="formatBytes(item.network_rx_bytes)" note="Cumulative since container start" />
+      <pulse-resource-metric label="Network sent" [value]="formatBytes(item.network_tx_bytes)" note="Cumulative since container start" />
+    </div>
+
+    <div class="grid gap-2 xl:grid-cols-2">
+      <article class="metric-card p-4">
+        <div class="mb-2 flex items-center justify-between"><h3 class="text-sm font-medium">CPU</h3><span class="text-xs text-muted">{{ formatPercent(item.cpu_utilization_percent) }}</span></div>
+        <pulse-metric-chart [series]="[{ points: cpuPoints(), color: 'var(--color-accent)' }]" [range]="range()" [percentage]="true" chartLabel="CPU utilization history" emptyMessage="No CPU samples in this range" />
+      </article>
+      <article class="metric-card p-4">
+        <div class="mb-2 flex items-center justify-between"><h3 class="text-sm font-medium">Memory</h3><span class="text-xs text-muted">{{ formatPercent(item.memory_utilization_percent) }}</span></div>
+        <pulse-metric-chart [series]="[{ points: memoryPoints(), color: 'var(--color-accent)' }]" [range]="range()" [percentage]="true" chartLabel="Memory utilization history" emptyMessage="No memory samples in this range" />
+      </article>
+      <article class="metric-card p-4 xl:col-span-2">
+        <div class="mb-2 flex items-center justify-between">
+          <h3 class="text-sm font-medium">Network I/O</h3>
+          <span class="flex gap-3 text-[10px] text-muted"><i class="text-info">● Received</i><i class="text-warning">● Sent</i></span>
+        </div>
+        <pulse-metric-chart
+          [series]="[{ points: network().received, color: 'var(--color-info)' }, { points: network().sent, color: 'var(--color-warning)' }]"
+          [range]="range()"
+          chartLabel="Network throughput history"
+          emptyMessage="At least two network samples are needed"
+        />
+      </article>
+    </div>
+  </div>
+} @else {
+  <div class="empty-state min-h-[520px]">
+    <span class="mb-3 size-2 rounded-full bg-accent"></span>
+    <h2 class="text-sm font-medium">No container selected</h2>
+    <p class="mt-1 text-xs text-muted">Select a monitored container to inspect its resource usage and history.</p>
+  </div>
+}

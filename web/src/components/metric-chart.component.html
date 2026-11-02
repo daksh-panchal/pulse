@@ -1,0 +1,16 @@
+@if (!model().hasData) {
+  <div class="grid h-40 place-items-center border-b border-line text-xs text-faint">{{ emptyMessage() }}</div>
+} @else {
+  <svg class="h-40 w-full" [attr.viewBox]="'0 0 ' + model().width + ' ' + model().height" role="img" [attr.aria-label]="chartLabel()">
+    @for (line of model().grid; track line.y) {
+      <line x1="42" [attr.y1]="line.y" x2="692" [attr.y2]="line.y" stroke="var(--color-line)"></line>
+      <text x="35" [attr.y]="line.y + 3" text-anchor="end" fill="var(--color-faint)" font-size="9">{{ line.label }}</text>
+    }
+    @for (time of model().times; track time.x) {
+      <text [attr.x]="time.x" y="166" [attr.text-anchor]="time.anchor" fill="var(--color-faint)" font-size="9">{{ time.label }}</text>
+    }
+    @for (line of model().lines; track $index) {
+      <path [attr.d]="line.path" fill="none" [attr.stroke]="line.color" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>
+    }
+  </svg>
+}

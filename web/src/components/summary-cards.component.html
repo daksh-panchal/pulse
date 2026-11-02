@@ -1,0 +1,18 @@
+<section class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Infrastructure summary">
+  <article class="summary-card">
+    <div><strong>{{ healthy() }}</strong><span>Healthy</span></div>
+    <p>{{ containers().length }} monitored containers</p>
+  </article>
+  <article class="summary-card">
+    <div><strong>{{ containers().length - healthy() }}</strong><span>Need attention</span></div>
+    <p>Unavailable, stale, or alerting</p>
+  </article>
+  <article class="summary-card">
+    <div><strong>{{ activeIncidents().length }}</strong><span>Active incidents</span></div>
+    <p>Across monitored infrastructure</p>
+  </article>
+  <article class="summary-card">
+    <div><strong>{{ containers().length ? current() + "/" + containers().length : "—" }}</strong><span>Current</span></div>
+    <p>Containers reporting fresh telemetry</p>
+  </article>
+</section>

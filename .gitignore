@@ -20,6 +20,9 @@ profile.cov
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+node_modules/
+*.tsbuildinfo
+prerendered-routes.json
 
 # Go workspace file
 go.work
@@ -31,3 +34,5 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+.angular/

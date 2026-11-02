@@ -1,0 +1,21 @@
+<header class="sticky top-0 z-20 border-b border-line bg-canvas/95 backdrop-blur">
+  <div class="mx-auto flex h-14 max-w-[1480px] items-center justify-between px-4 sm:px-6">
+    <div class="flex items-center gap-2.5 text-sm font-semibold">
+      <span class="flex h-5 items-center gap-0.5 text-accent" aria-hidden="true">
+        <span class="h-2 w-0.5 rounded-full bg-current"></span>
+        <span class="h-[18px] w-0.5 rounded-full bg-current"></span>
+        <span class="h-3 w-0.5 rounded-full bg-current"></span>
+        <span class="h-1.5 w-0.5 rounded-full bg-current"></span>
+      </span>
+      <span>Pulse</span>
+    </div>
+    <div class="flex items-center gap-3 text-xs text-muted">
+      <span [class]="online() ? 'text-accent' : 'text-danger'">
+        ● {{ online() ? "Live" : "Disconnected" }}
+      </span>
+      <span class="hidden sm:inline">
+        {{ generatedAt() ? "Updated " + relativeTime(generatedAt()) : "Waiting for telemetry" }}
+      </span>
+    </div>
+  </div>
+</header>
